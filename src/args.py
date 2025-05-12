@@ -1,16 +1,17 @@
 import os
 import argparse
-
 import torch
-from src.utils import WORK_DIR
 
-# #WORK_DIR = '/home/group/self_improving/experiments/mixing'
-# WORK_DIR = '/groups/gcd50678/mixing'
-# #WORK_DIR = 'drive/MyDrive/mixing'
+WORK_DIR = '/scratch/gpfs/zt6264/one_shot_fl_task_arithmetic'
+
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type = int, default = 0)
+    parser.add_argument(
+        "--seed", 
+        type = int, 
+        default = 0)
     parser.add_argument(
         "--data-location",
         type=str,
@@ -28,12 +29,6 @@ def parse_arguments():
         default=None,
         type=lambda x: x.split(","),
         help="Which dataset(s) to patch on.",
-    )
-    parser.add_argument(
-        "--exp_name",
-        type=str,
-        default=None,
-        help="Name of the experiment, for organization purposes only."
     )
     parser.add_argument(
         "--results-db",
@@ -93,6 +88,12 @@ def parse_arguments():
         help="Optionally save a _classifier_, e.g. a zero shot classifier or probe.",
     )
     parser.add_argument(
+        "--load",
+        type=lambda x: x.split(","),
+        default=None,
+        help="Optionally load _classifiers_, e.g. a zero shot classifier or probe or ensemble both.",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=str,
         default=None,
@@ -101,20 +102,18 @@ def parse_arguments():
     parser.add_argument(
         "--openclip-cachedir",
         type=str,
-        default='/home/acg16879qo/openclip-cache',
+        default=os.path.join(WORK_DIR, 'open_clip_cache'),
         help='Directory for caching models from OpenCLIP'
     )
-
-    parser.add_argument("--scaling-coef", default = 0.5)
+    parser.add_argument(
+        "--scaling-coef", 
+        type = float,
+        help = 'Scaling coefficient of task vectors')
 
     parser.add_argument("--base-path", type = str, help = "Base path where all experiments resulst are stored")
     
-    parser.add_argument('--finetune-method', default = 'standard')
-    parser.add_argument('--exp_id', type = int)
-    
-    parser.add_argument('--checkpoints', default = 'baseline', help ='If use new finetuned checkpoints, ths argument should be set to new')
-    parser.add_argument('--alpha-feddyn', default = 0.5, help = 'Hyperparameter which controls the regularization term for finetuning by FedDyn')
-    parser.add_argument('--save_what', default = 'finetuned', help = 'If save what == finetuned, only save fintuned checkpoints.')
+
+
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
     
