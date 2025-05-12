@@ -1,4 +1,3 @@
-
 from src.datasets.common import get_dataloader, maybe_dictionarize
 from src.datasets.registry import get_dataset
 from src.eval import eval_single_dataset
@@ -6,14 +5,11 @@ import torch
 from src.args import parse_arguments
 from src.utils import cosine_lr, LabelSmoothing
 from src.task_vectors import TaskVector
-import matplotlib.pyplot as plt
 import os
 import pickle
 import numpy as np
-from src.helpers import *
 from src.eval import *
 import numpy as np
-from src.utils import WORK_DIR
 
 
 def median_of_tvs(tvs):
@@ -32,7 +28,7 @@ def fednova(tvs, local_steps):
   return weighted_sum_tvs(tvs, reweight_coeff)
 
 
-def fedgma(tvs, tau):
+def fedgma(tvs, rho):
   # Gradient mask average
   sign_vector = {}
 
@@ -43,7 +39,7 @@ def fedgma(tvs, tau):
       else:
         sign_vector[key] += torch.sign(tv.vector[key])
 
-  threshold = torch.nn.Threshold(-tau, -1, inplace = True)
+  threshold = torch.nn.Threshold(-rho, -1, inplace = True)
   for key in sign_vector:
     sign_vector[key]  = torch.abs(sign_vector[key]/len(tvs))
     sign_vector[key] = -threshold(-sign_vector[key])
@@ -57,23 +53,35 @@ def fedgma(tvs, tau):
   return new_task_vector
 
 
-def hyper_search_fedgma(tvs, datasets, evaluation_datasets, pretrain, args, search_range, tau_range = np.arange(0.1, 1.0, 0.1), metric = 'normalized'):
-  print(tau_range)  
+def cclip(tvs, rho):
+  cliped_tvs = []
+  for tv in tvs:
+    norm = tv.norm()
+    threshold = min(1, rho/norm)
+    new_vector = {}
+    for key in tv.vector:
+      new_vector[key] = tv.vector[key]*threshold
+    cliped_tvs.append(TaskVector(vector = new_vector))
+  
+  return sum(cliped_tvs)
+
+
+def hyper_search_fedgma(tvs, datasets, evaluation_datasets, pretrain, args, search_range, rho_range = np.arange(0.1, 1.0, 0.1), metric = 'normalized'): 
   task_specific_acc = {}
   if metric == 'normalized':
     for tv, eval_ds in zip(tvs, evaluation_datasets):
       task_specific_acc[eval_ds] = eval_single_dataset(tv.apply_to(pretrain, scaling_coef = 1.0), eval_ds, args)['top1'] 
   
   best_acc = 0.0
-  best_tau = None
+  best_rho = None
   best_scaling_coef = None
   best_model = None
 
-  for tau in tau_range:
-    curr_tau = tau
-    vector = fedgma(tvs, curr_tau)
+  for rho in rho_range:
+    curr_rho = rho
+    vector = fedgma(tvs, curr_rho)
     for curr_coef in search_range:
-      print(f'tau, coef = {tau}, {curr_coef}')
+      print(f'rho, coef = {rho}, {curr_coef}')
       curr_acc = 0.0
       curr_model = vector.apply_to(pretrain, scaling_coef = curr_coef)
       for ds in datasets:
@@ -88,11 +96,11 @@ def hyper_search_fedgma(tvs, datasets, evaluation_datasets, pretrain, args, sear
       if curr_acc > best_acc:
           best_acc = curr_acc
           best_scaling_coef = curr_coef
-          best_tau = curr_tau
+          best_rho = curr_rho
           best_model = curr_model
 
       
-    search_info = {'scaling_coef': best_scaling_coef, 'tau': best_tau, 'metric': metric}
+    search_info = {'scaling_coef': best_scaling_coef, 'rho': best_rho, 'metric': metric}
     evaluation_avg_acc = 0.0
     for eval_ds in evaluation_datasets:
       best_model_acc = eval_single_dataset(best_model, eval_ds, args)['top1']
@@ -106,21 +114,11 @@ def hyper_search_fedgma(tvs, datasets, evaluation_datasets, pretrain, args, sear
     return evaluation_avg_acc, search_info
     
 
-def cclip(tvs, norm_of_tvs, tau):
-  cliped_tvs = []
-  for tv, norm in zip(tvs, norm_of_tvs):
-    threshold = min(1, tau/norm)
-    new_vector = {}
-    for key in tv.vector:
-      new_vector[key] = tv.vector[key]*threshold
-    cliped_tvs.append(TaskVector(vector = new_vector))
-  
-  return sum(cliped_tvs)
 
 
 def hyper_search_cclip(tvs, datasets, evaluation_datasets, pretrain, args, search_range, metric = 'normalized'):
-  norm_of_tvs = [tv.norm().cpu() for tv in tvs]
-  tau_range = np.linspace(min(norm_of_tvs), max(norm_of_tvs), 5, endpoint = False)
+  norm_of_tvs = [tv.norm() for tv in tvs]
+  rho_range = np.linspace(min(norm_of_tvs), max(norm_of_tvs), 5, endpoint = False)
 
   task_specific_acc = {}
   if metric == 'normalized':
@@ -129,16 +127,16 @@ def hyper_search_cclip(tvs, datasets, evaluation_datasets, pretrain, args, searc
   
   best_acc = 0.0
   best_coef = None
-  best_tau = None
+  best_rho = None
   best_model = None
 
-  for tau in tau_range:
-    curr_tau = tau
+  for rho in rho_range:
+    curr_rho = rho
     for coef in search_range:
       curr_coef = coef
-      print(f'tau, coef = {curr_tau}, {curr_coef}')
+      print(f'rho, coef = {curr_rho}, {curr_coef}')
       curr_acc = 0.0
-      vector = cclip(tvs, norm_of_tvs, curr_tau)
+      vector = cclip(tvs, norm_of_tvs, curr_rho)
       curr_model = vector.apply_to(pretrain, scaling_coef = curr_coef)
       for ds in datasets:
         curr_model_acc = eval_single_dataset(curr_model, ds, args)['top1']
@@ -150,12 +148,12 @@ def hyper_search_cclip(tvs, datasets, evaluation_datasets, pretrain, args, searc
 
       if curr_acc > best_acc:
         best_acc = curr_acc
-        best_tau = curr_tau
+        best_rho = curr_rho
         best_coef = curr_coef
         best_model = curr_model
 
 
-  search_info = {'scaling_coef': best_coef, 'tau': best_tau, 'metric': metric}
+  search_info = {'scaling_coef': best_coef, 'rho': best_rho, 'metric': metric}
   
   evaluation_avg_acc = 0.0
   for eval_ds in evaluation_datasets:
@@ -220,3 +218,13 @@ def coef_search(tvs, vector, datasets, evaluation_datasets, pretrain, args, sear
     evaluation_avg_acc = evaluation_avg_acc/len(evaluation_datasets)
     
     return evaluation_avg_acc, curr_model, search_info
+
+
+def weighted_sum_tvs(tvs, scaling_coefs):
+  print('scaling coefficients are given by {}'.format(scaling_coefs))
+  with torch.no_grad():
+    new_dict = {}
+    for key in tvs[0].vector:
+      new_dict[key] = sum([tvs[i].vector[key]*scaling_coefs[i] for i in range(len(tvs))])
+    
+  return TaskVector(vector = new_dict)
