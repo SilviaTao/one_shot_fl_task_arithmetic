@@ -40,6 +40,7 @@ In this work, we implemented Task Arithmetic and its variants based on four Fede
 To run FedNova, provide a list of task vectors along with a corresponding list of the number of iterations used to train each task vector. In this work, we implemented a simplified version of FedNova by normalizing each task vector based solely on the number of training iterations. For the full algorithm, please refer to the original [paper](https://arxiv.org/pdf/2007.07481).
 
 ```
+from src.task_vectors import TaskVector
 from src.ta_algorithms import fednova
 
 task_vectors = [list of task vectors]
@@ -50,6 +51,7 @@ new_task_vector = fednova(task_vectors, local_steps) # new merged task vector ge
 To run FedGMA, provide a list of task vectors and a value for the hyperparameter $\rho$. 
 
 ```
+from src.task_vectors import TaskVector
 from src.ta_algorithms import fedgma
 
 task_vectors = [list of task vectors]
@@ -60,6 +62,7 @@ new_task_vector = fedgma(task_vectors, rho)
 To run Median, provide a list of task vectors. 
 
 ```
+from src.task_vectors import TaskVector
 from src.ta_algorithms import median_of_tvs
 
 task_vectors = [list of task vectors]
@@ -69,6 +72,7 @@ new_task_vector = median_of_tvs(task_vectors)
 To run CCLIP, provide a list of task vectors and a value for the hyperparameter $\rho$.
 
 ```
+from src.task_vectors import TaskVector
 from src.ta_algorithms import cclip
 
 task_vectors = [list of task vectors]
@@ -80,6 +84,7 @@ new_task_vector = cclip(task_vectors, rho)
 To obatin the final model, first compute the new task vector using one of the supported algorithms. Then apply the new task vector back to a pre-trained model using a scaling coefficient. 
 
 ```
+import torch
 from src.task_vectors import TaskVector
 
 scaling_coef = ... 
@@ -88,12 +93,67 @@ new_model = new_task_vector.apply_to(pretrained_checkpoint, scaling_coef)
 ```
 
 ### Hyperparameter search
-For FedNova and Median, the only hyperparameter to tune is the scaling coefficient used when applying the new task vector to the pretrained model. Below is an example of how to search for the optimal scaling coefficient.
+For FedNova and Median, the only hyperparameter to tune is the scaling coefficient used when applying the new task vector to the pretrained model. By default, the search criterion used in the paper is normalized accuracy. Below is an example of how to search for the optimal scaling coefficient.
 
 ```
+import torch
+from src.args import parse_arguments
+from src.ta_algorithms import scaling_coef_search, hyper_search_fedgma, hyper_search_cclip
+from src.task_vectors import TaskVector
+
+# set up arguments for validation
+args = parse_arguments() 
+
+
+# Define the list of task vectors and their corresponding evaluation datasets
+task_vectors = [list of task vectors]
+evaluation_datasets = [datasets corresponding to task vectors]
+
+pretrain_checkpoint = torch.load('/path/to/the/checkpoint/')
+scaling_coef_search_range = [...]
+
+# Choose the merging method: 'fednova' or 'median'
+merging_method = ...
+
+# (FedNova only) List of local steps used to fine-tune the task vectors
+local_steps = ... 
+
+# Run the scaling coefficient search
+best_model = scaling_coef_search(
+    task_vectors, 
+    evaluation_datasets, 
+    pretrain_checkpoint, 
+    scaling_coef_search_range, 
+    merging_method, 
+    args,   
+    local_steps = local_steps # Only required for FedNova
+    ) 
 ```
 
 For FedGMA and CCLIP, in addition to the scaling coefficient, you also need to tune the hyperparameter $\rho$. We provide code to search for the best combination of $\rho$ and the scaling coefficient for both methods.
 
 ```
+# For FedGMA, define the range of rho values to search
+rho_range = ...
+best_model = hyper_search_fedgma(
+    task_vectors,
+    evaluation_datasets,
+    pretrain_checkpoint,
+    scaling_coef_search_range,
+    args,
+    rho_range
+)
+
+# For CCLIP, specify the number of rho values you want to search.
+# By default, the rho_range is computed as np.linspace(max_task_vector_norm, min_task_vector_norm, number_of_rho)
+
+number_of_rho = ... 
+best_model = hyper_search_cclip(
+    task_vectors,
+    evaluation_datasets,
+    pretrain_checkpoint,
+    scaling_coef_search_range,
+    args,
+    number_of_rho
+)
 ```

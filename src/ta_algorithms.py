@@ -6,7 +6,6 @@ from src.args import parse_arguments
 from src.utils import cosine_lr, LabelSmoothing
 from src.task_vectors import TaskVector
 import os
-import pickle
 import numpy as np
 from src.eval import *
 import numpy as np
@@ -66,11 +65,13 @@ def cclip(tvs, rho):
   return sum(cliped_tvs)
 
 
-def hyper_search_fedgma(tvs, datasets, evaluation_datasets, pretrain, args, search_range, rho_range = np.arange(0.1, 1.0, 0.1), metric = 'normalized'): 
-  task_specific_acc = {}
-  if metric == 'normalized':
-    for tv, eval_ds in zip(tvs, evaluation_datasets):
-      task_specific_acc[eval_ds] = eval_single_dataset(tv.apply_to(pretrain, scaling_coef = 1.0), eval_ds, args)['top1'] 
+
+def hyper_search_fedgma(task_vectors, evaluation_datasets, pretrain_checkpoint, scaling_coef_search_range, args, rho_range = np.arange(0.1, 1.0, 0.1), metric = 'normalized'): 
+  
+  if metric == 'normalized': # Calculate task-specific accuracy for normalization 
+    task_specific_acc = {}
+    for tv, eval_ds in zip(task_vectors, evaluation_datasets):
+      task_specific_acc[eval_ds] = eval_single_dataset(tv.apply_to(pretrain_checkpoint, scaling_coef = 1.0), eval_ds, args)['top1'] 
   
   best_acc = 0.0
   best_rho = None
@@ -79,19 +80,19 @@ def hyper_search_fedgma(tvs, datasets, evaluation_datasets, pretrain, args, sear
 
   for rho in rho_range:
     curr_rho = rho
-    vector = fedgma(tvs, curr_rho)
-    for curr_coef in search_range:
+    vector = fedgma(task_vectors, curr_rho)
+    for curr_coef in scaling_coef_search_range:
       print(f'rho, coef = {rho}, {curr_coef}')
       curr_acc = 0.0
-      curr_model = vector.apply_to(pretrain, scaling_coef = curr_coef)
-      for ds in datasets:
-        curr_model_acc = eval_single_dataset(curr_model, ds, args)['top1']
+      curr_model = vector.apply_to(pretrain_checkpoint, scaling_coef = curr_coef)
+      for eval_ds in evaluation_datasets:
+        curr_model_acc = eval_single_dataset(curr_model, eval_ds, args)['top1']
         if metric == 'normalized':
-          curr_acc += curr_model_acc/(task_specific_acc[ds.split('Val')[0]])
+          curr_acc += curr_model_acc/(task_specific_acc[eval_ds])
   
         else:
           curr_acc += curr_model_acc
-      curr_acc = curr_acc/len(datasets)
+      curr_acc = curr_acc/len(evaluation_datasets)
 
       if curr_acc > best_acc:
           best_acc = curr_acc
@@ -99,31 +100,24 @@ def hyper_search_fedgma(tvs, datasets, evaluation_datasets, pretrain, args, sear
           best_rho = curr_rho
           best_model = curr_model
 
-      
-    search_info = {'scaling_coef': best_scaling_coef, 'rho': best_rho, 'metric': metric}
-    evaluation_avg_acc = 0.0
-    for eval_ds in evaluation_datasets:
-      best_model_acc = eval_single_dataset(best_model, eval_ds, args)['top1']
-      if metric == 'normalized':
-        search_info[eval_ds] = best_model_acc/(task_specific_acc[eval_ds])
-      else:
-        search_info[eval_ds] = best_model_acc
-      evaluation_avg_acc += search_info[eval_ds]
-    evaluation_avg_acc = evaluation_avg_acc/len(evaluation_datasets)
-    
-    return evaluation_avg_acc, search_info
+  # Report final average test accuracy and search information
+  search_info = {'scaling_coef': best_scaling_coef, 'rho': best_rho, 'metric': metric}
+  print(f'search information: {search_info}')
+
+  return best_model
     
 
 
 
-def hyper_search_cclip(tvs, datasets, evaluation_datasets, pretrain, args, search_range, metric = 'normalized'):
-  norm_of_tvs = [tv.norm() for tv in tvs]
-  rho_range = np.linspace(min(norm_of_tvs), max(norm_of_tvs), 5, endpoint = False)
+def hyper_search_cclip(task_vectors, evaluation_datasets, pretrain_checkpoint, scaling_coef_search_range, args, number_of_rho, metric = 'normalized'):
+  norm_of_tvs = [tv.norm() for tv in task_vectors]
+  rho_range = np.linspace(min(norm_of_tvs), max(norm_of_tvs), number_of_rho, endpoint = False)
 
-  task_specific_acc = {}
+  
   if metric == 'normalized':
-    for tv, eval_ds in zip(tvs, evaluation_datasets):
-      task_specific_acc[eval_ds] = eval_single_dataset(tv.apply_to(pretrain, scaling_coef = 1.0), eval_ds, args)['top1'] 
+    task_specific_acc = {}
+    for tv, eval_ds in zip(task_vectors, evaluation_datasets):
+      task_specific_acc[eval_ds] = eval_single_dataset(tv.apply_to(pretrain_checkpoint, scaling_coef = 1.0), eval_ds, args)['top1'] 
   
   best_acc = 0.0
   best_coef = None
@@ -132,19 +126,19 @@ def hyper_search_cclip(tvs, datasets, evaluation_datasets, pretrain, args, searc
 
   for rho in rho_range:
     curr_rho = rho
-    for coef in search_range:
+    for coef in scaling_coef_search_range:
       curr_coef = coef
       print(f'rho, coef = {curr_rho}, {curr_coef}')
       curr_acc = 0.0
-      vector = cclip(tvs, norm_of_tvs, curr_rho)
-      curr_model = vector.apply_to(pretrain, scaling_coef = curr_coef)
-      for ds in datasets:
-        curr_model_acc = eval_single_dataset(curr_model, ds, args)['top1']
+      vector = cclip(task_vectors, curr_rho)
+      curr_model = vector.apply_to(pretrain_checkpoint, scaling_coef = curr_coef)
+      for eval_ds in evaluation_datasets:
+        curr_model_acc = eval_single_dataset(curr_model, eval_ds, args)['top1']
         if metric == 'normalized':
-          curr_acc += curr_model_acc/(task_specific_acc[ds.split('Val')[0]])
+          curr_acc += curr_model_acc/(task_specific_acc[eval_ds])
         else:
           curr_acc += curr_model_acc
-      curr_acc = curr_acc/len(datasets)
+      curr_acc = curr_acc/len(evaluation_datasets)
 
       if curr_acc > best_acc:
         best_acc = curr_acc
@@ -153,71 +147,52 @@ def hyper_search_cclip(tvs, datasets, evaluation_datasets, pretrain, args, searc
         best_model = curr_model
 
 
-  search_info = {'scaling_coef': best_coef, 'rho': best_rho, 'metric': metric}
-  
-  evaluation_avg_acc = 0.0
-  for eval_ds in evaluation_datasets:
-    best_model_acc = eval_single_dataset(best_model, eval_ds, args)['top1']
-    if metric == 'normalized':
-      search_info[eval_ds] = best_model_acc/(task_specific_acc[eval_ds])
-    else:
-      search_info[eval_ds] = best_model_acc
-    evaluation_avg_acc += search_info[eval_ds]
-  evaluation_avg_acc = evaluation_avg_acc/len(evaluation_datasets)
-  
-  return evaluation_avg_acc, search_info
+  search_info = {'scaling_coef': best_coef, 'rho': best_rho, 'metric': metric}  
+  print(f'search information: {search_info}')
+  return best_model
 
 
-def coef_search(tvs, vector, datasets, evaluation_datasets, pretrain, args, search_range, metric = 'normalized'):
-    # This function is searching for the best coefficient used to apply task vectors to the pretrain
-    # The search is conducted over validation dataset
+def scaling_coef_search(task_vectors, evaluation_datasets, pretrain_checkpoint, scaling_coef_search_range, merging_method, args, metric = 'normalized', local_steps = None):
+  # This function is searching for the best coefficient used to apply task vectors to the pretrain
+  # The search is conducted over validation dataset
+
+  if metric == 'normalized':
     task_specific_acc = {}
-    if metric == 'normalized':
-      for tv, eval_ds in zip(tvs, evaluation_datasets):
-        task_specific_acc[eval_ds] = eval_single_dataset(tv.apply_to(pretrain, scaling_coef = 1.0), eval_ds, args)['top1']
-    
-    curr_coef = search_range[0]
-    curr_acc = 0.0
-    curr_model = vector.apply_to(pretrain, scaling_coef = curr_coef)
-    for ds in datasets:
-      curr_model_acc = eval_single_dataset(curr_model, ds, args)['top1']
-      if metric == 'normalized':
+    for tv, eval_ds in zip(task_vectors, evaluation_datasets):
+      task_specific_acc[eval_ds] = eval_single_dataset(tv.apply_to(pretrain_checkpoint, scaling_coef = 1.0), eval_ds, args)['top1']
 
-        curr_acc += curr_model_acc/(task_specific_acc[ds.split('Val')[0]])
-  
-      else:
-        curr_acc += curr_model_acc
-    curr_acc = curr_acc/len(datasets)
+  best_acc = 0.0
+  best_coef = None
+  best_model = None
 
-    for i in range(1, len(search_range)):
-        coef = search_range[i]
-        acc = 0.0
-        model = vector.apply_to(pretrain, scaling_coef = coef)
-        for ds in datasets:
-          curr_model_acc = eval_single_dataset(model, ds, args)['top1']
-          if metric == 'normalized':
+  # Construct merged task vector
+  if merging_method == 'fednova':
+    assert local_steps is not None
+    vector = fednova(task_vectors, local_steps)
+  elif merging_method == 'median':
+    vector = median_of_tvs(task_vectors)
 
-            acc += curr_model_acc/(task_specific_acc[ds.split('Val')[0]])
-          else:
-            acc += curr_model_acc
-        acc = acc/len(datasets)
-        if acc > curr_acc:
-            curr_acc = acc
-            curr_coef = coef
-            curr_model = model
-      
-    search_info = {'scaling_coef': curr_coef, 'metric': metric}
-    evaluation_avg_acc = 0.0
+
+  for coef in scaling_coef_search_range:
+    curr_coef = coef
+    acc = 0.0
+    model = vector.apply_to(pretrain_checkpoint, scaling_coef = curr_coef)
     for eval_ds in evaluation_datasets:
-      curr_model_acc = eval_single_dataset(curr_model, eval_ds, args)['top1']
+      curr_model_acc = eval_single_dataset(model, eval_ds, args)['top1']
       if metric == 'normalized':
-        search_info[eval_ds] = curr_model_acc/(task_specific_acc[eval_ds])
+        acc += curr_model_acc/(task_specific_acc[eval_ds])
       else:
-        search_info[eval_ds] = curr_model_acc
-      evaluation_avg_acc += search_info[eval_ds]
-    evaluation_avg_acc = evaluation_avg_acc/len(evaluation_datasets)
+        acc += curr_model_acc
+      
+      acc = acc/len(evaluation_datasets)
+      if acc > best_acc:
+          best_acc = acc
+          best_coef = curr_coef
+          best_model = model
     
-    return evaluation_avg_acc, curr_model, search_info
+  search_info = {'scaling_coef': best_coef, 'metric': metric}
+  print(f'search information: {search_info}')
+  return best_model
 
 
 def weighted_sum_tvs(tvs, scaling_coefs):
